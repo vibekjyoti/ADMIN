@@ -1,533 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Remote Host Viewer</title>
+    <style>
+        body { background: #121212; color: white; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; font-family: sans-serif; }
+        #remoteVideo { width: 80vw; max-width: 800px; min-height: 400px; border: 2px solid #444; background: #000; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); cursor: crosshair; }
+        #startBtn { padding: 12px 24px; margin-bottom: 15px; cursor: pointer; background: #4caf50; color: white; border: none; border-radius: 4px; font-weight: bold; font-size: 16px; }
+        #startBtn:hover { background: #45a049; }
+    </style>
+</head>
+<body>
+    
+    <h2>Live Device Stream</h2>
+    <h4 id="statusText" style="color: #ff9800;">🌐 Fetching network credentials...</h4>
+    
+    <!-- Button bypasses public domain autoplay restrictions -->
+    <button id="startBtn" style="display: none;">Connect to Stream</button>
 
-<style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: 'DM Mono', monospace; }
-  @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=DM+Sans:wght@300;400;500;600&display=swap');
+    <!-- Muted & Controls are required alongside the button -->
+    <video id="remoteVideo" autoplay muted playsinline></video>
 
-  .panel { display: flex; height: 680px; background: var(--color-background-tertiary); border-radius: var(--border-radius-lg); overflow: hidden; border: 0.5px solid var(--color-border-tertiary); font-family: 'DM Sans', sans-serif; }
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script>
+        // Use your Render URL. Ensure it is HTTPS if deployed on Vercel.
+        const socket = io('https://remote-ekp4.onrender.com', { 
+            transports: ['websocket'], 
+            upgrade: false 
+        }); 
+        
+        const videoElement = document.getElementById('remoteVideo');
+        const statusText = document.getElementById('statusText');
+        const startBtn = document.getElementById('startBtn');
+        
+        let peerConnection;
+        let iceServers = [];
+        let currentStreamerId = null; // Stores phone's ID for mouse controls
 
-  /* LEFT SIDEBAR */
-  .sidebar { width: 200px; background: var(--color-background-primary); border-right: 0.5px solid var(--color-border-tertiary); display: flex; flex-direction: column; flex-shrink: 0; }
-  .brand { padding: 18px 16px; border-bottom: 0.5px solid var(--color-border-tertiary); }
-  .brand-name { font-size: 13px; font-weight: 600; color: var(--color-text-primary); letter-spacing: 0.02em; }
-  .brand-sub { font-size: 10px; color: var(--color-text-tertiary); margin-top: 2px; font-family: 'DM Mono', monospace; }
-  .status-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #22c55e; margin-right: 5px; animation: pulse 2s infinite; }
-  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+        // ==========================================
+        // 1. FETCH TURN CREDENTIALS
+        // ==========================================
+        async function fetchIceServers() {
+            try {
+                const response = await fetch("https://remotehost.metered.live/api/v1/turn/credentials?apiKey=398a87f2720119c27c0aeca45a59eae3d949");
+                iceServers = await response.json();
+                console.log("✅ TURN Servers Loaded:", iceServers);
+                statusText.textContent = "🟢 Ready. Waiting for phone...";
+                startBtn.style.display = "block"; 
+            } catch (error) {
+                console.error("❌ Failed to fetch TURN servers:", error);
+                iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
+                statusText.textContent = "🟢 Ready (Fallback STUN). Waiting for phone...";
+                startBtn.style.display = "block";
+            }
+        }
 
-  .nav-section { padding: 12px 10px 6px; }
-  .nav-label { font-size: 9px; font-weight: 600; color: var(--color-text-tertiary); letter-spacing: 0.08em; text-transform: uppercase; padding: 0 6px; margin-bottom: 4px; }
-  .nav-item { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 6px; cursor: pointer; font-size: 12px; color: var(--color-text-secondary); transition: all 0.15s; margin-bottom: 1px; }
-  .nav-item:hover { background: var(--color-background-secondary); color: var(--color-text-primary); }
-  .nav-item.active { background: var(--color-background-info); color: var(--color-text-info); }
-  .nav-icon { width: 14px; height: 14px; flex-shrink: 0; }
+        fetchIceServers();
 
-  .client-section { padding: 12px 10px; border-top: 0.5px solid var(--color-border-tertiary); margin-top: auto; }
-  .client-badge { display: flex; align-items: center; gap: 8px; padding: 8px; background: var(--color-background-secondary); border-radius: 8px; }
-  .client-avatar { width: 28px; height: 28px; border-radius: 50%; background: var(--color-background-info); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 600; color: var(--color-text-info); flex-shrink: 0; }
-  .client-info { min-width: 0; }
-  .client-name { font-size: 11px; font-weight: 500; color: var(--color-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .client-device { font-size: 10px; color: var(--color-text-tertiary); font-family: 'DM Mono', monospace; }
+        // ==========================================
+        // 2. SOCKET INIT & UI CONTROLS
+        // ==========================================
+        startBtn.onclick = () => {
+            socket.emit('request_stream');
+            startBtn.style.display = 'none';
+            statusText.textContent = "🟡 Requesting stream...";
+        };
 
-  /* MAIN AREA */
-  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+        socket.on('connect', () => {
+            console.log('Connected to signaling server');
+        });
 
-  .topbar { height: 48px; background: var(--color-background-primary); border-bottom: 0.5px solid var(--color-border-tertiary); display: flex; align-items: center; padding: 0 16px; gap: 12px; flex-shrink: 0; }
-  .topbar-title { font-size: 12px; font-weight: 500; color: var(--color-text-primary); flex: 1; }
-  .topbar-meta { font-size: 11px; color: var(--color-text-tertiary); font-family: 'DM Mono', monospace; }
-  .badge { font-size: 10px; padding: 3px 8px; border-radius: 4px; font-weight: 500; }
-  .badge-live { background: rgba(34,197,94,0.12); color: #16a34a; }
-  .badge-warn { background: var(--color-background-warning); color: var(--color-text-warning); }
-  .btn-sm { font-size: 11px; padding: 5px 10px; border-radius: 5px; border: 0.5px solid var(--color-border-secondary); background: var(--color-background-primary); color: var(--color-text-secondary); cursor: pointer; transition: all 0.15s; font-family: 'DM Sans', sans-serif; }
-  .btn-sm:hover { background: var(--color-background-secondary); color: var(--color-text-primary); }
-  .btn-danger { border-color: var(--color-border-danger); color: var(--color-text-danger); }
-  .btn-danger:hover { background: var(--color-background-danger); }
+        socket.on('streamer_online', () => {
+            console.log('Phone just came online! Click connect.');
+            startBtn.style.display = 'block';
+        });
 
-  /* CONTENT AREA */
-  .content { flex: 1; display: flex; overflow: hidden; }
+        socket.on('streamer_offline', () => {
+            console.log('Phone disconnected.');
+            statusText.textContent = "🔴 Phone disconnected.";
+            statusText.style.color = "#f44336";
+            if (peerConnection) {
+                peerConnection.close();
+            }
+        });
 
-  /* PHONE VIEWPORT */
-  .phone-wrap { width: 260px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; background: var(--color-background-secondary); border-right: 0.5px solid var(--color-border-tertiary); }
-  .phone-frame { width: 198px; height: 400px; background: #111; border-radius: 36px; border: 6px solid #1a1a1a; position: relative; overflow: hidden; box-shadow: 0 0 0 1px #333; flex-shrink: 0; }
-  .phone-notch { position: absolute; top: 0; left: 50%; transform: translateX(-50%); width: 70px; height: 22px; background: #111; border-radius: 0 0 16px 16px; z-index: 10; display: flex; align-items: center; justify-content: center; gap: 5px; }
-  .notch-camera { width: 7px; height: 7px; border-radius: 50%; background: #222; border: 1px solid #333; }
-  .notch-speaker { width: 30px; height: 3px; border-radius: 2px; background: #222; }
-  .phone-screen { width: 100%; height: 100%; background: #f8f9fa; overflow: hidden; position: relative; }
-  .phone-statusbar { height: 28px; background: inherit; display: flex; align-items: flex-end; padding: 0 12px 4px; justify-content: space-between; font-size: 9px; font-weight: 600; color: #333; font-family: 'DM Mono', monospace; }
+        // ==========================================
+        // 3. WEBRTC NEGOTIATION
+        // ==========================================
+        socket.on('webrtc_offer', async (data) => {
+            console.log("📥 Received WebRTC Offer");
+            statusText.textContent = "🟡 Negotiating Video...";
+            
+            currentStreamerId = data.from; // Save ID to target clicks
+            
+            peerConnection = new RTCPeerConnection({ iceServers: iceServers });
+            
+            peerConnection.oniceconnectionstatechange = () => {
+                console.log("🧊 ICE State:", peerConnection.iceConnectionState);
+                if(peerConnection.iceConnectionState === "connected") {
+                    statusText.textContent = "🟢 Live Stream Connected!";
+                    statusText.style.color = "#4caf50";
+                }
+            };
 
-  /* SCREENS */
-  .screen { position: absolute; inset: 0; transition: opacity 0.3s, transform 0.3s; opacity: 0; pointer-events: none; transform: translateX(20px); }
-  .screen.active { opacity: 1; pointer-events: all; transform: translateX(0); }
+            peerConnection.ontrack = (event) => {
+                console.log("🎥 VIDEO TRACK RECEIVED!");
+                videoElement.srcObject = event.streams[0];
+            };
 
-  /* HOME SCREEN */
-  .home-topbar { background: #4F46E5; height: 62px; display: flex; align-items: flex-end; padding: 0 12px 10px; }
-  .home-topbar h3 { font-size: 12px; font-weight: 600; color: white; font-family: 'DM Sans'; }
-  .home-topbar span { font-size: 9px; color: rgba(255,255,255,0.7); margin-left: auto; font-family: 'DM Mono'; }
-  .home-content { padding: 10px; }
-  .home-banner { background: linear-gradient(135deg,#4F46E5,#7C3AED); border-radius: 10px; padding: 10px 12px; color: white; margin-bottom: 10px; }
-  .home-banner p { font-size: 9px; opacity: 0.8; font-family: 'DM Sans'; }
-  .home-banner h4 { font-size: 11px; font-weight: 600; font-family: 'DM Sans'; margin-top: 2px; }
-  .home-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-bottom: 10px; }
-  .home-card { background: white; border-radius: 8px; padding: 8px; border: 0.5px solid #e5e7eb; cursor: pointer; transition: transform 0.15s; }
-  .home-card:hover { transform: scale(1.02); }
-  .home-card-icon { width: 22px; height: 22px; border-radius: 6px; margin-bottom: 5px; display: flex; align-items: center; justify-content: center; }
-  .home-card h5 { font-size: 9px; font-weight: 600; color: #1f2937; font-family: 'DM Sans'; }
-  .home-card p { font-size: 8px; color: #6b7280; font-family: 'DM Sans'; margin-top: 1px; }
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    socket.emit('ice_candidate', { to: data.from, candidate: event.candidate });
+                }
+            };
 
-  /* PROFILE SCREEN */
-  .profile-header { background: #4F46E5; height: 90px; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; padding-bottom: 30px; position: relative; }
-  .profile-avatar-wrap { position: absolute; bottom: -22px; width: 44px; height: 44px; border-radius: 50%; background: white; display: flex; align-items: center; justify-content: center; border: 2px solid white; }
-  .profile-avatar { width: 38px; height: 38px; border-radius: 50%; background: #E0E7FF; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; color: #4F46E5; font-family: 'DM Sans'; }
-  .profile-body { padding: 32px 12px 12px; }
-  .profile-name { text-align: center; font-size: 12px; font-weight: 600; color: #1f2937; font-family: 'DM Sans'; }
-  .profile-email { text-align: center; font-size: 9px; color: #6b7280; font-family: 'DM Mono'; margin-bottom: 12px; }
-  .profile-row { display: flex; align-items: center; padding: 7px 0; border-bottom: 0.5px solid #f3f4f6; }
-  .profile-row-label { font-size: 9px; color: #6b7280; flex: 1; font-family: 'DM Sans'; }
-  .profile-row-val { font-size: 9px; color: #1f2937; font-family: 'DM Mono'; }
+            await peerConnection.setRemoteDescription(new RTCSessionDescription({ 
+                type: 'offer', 
+                sdp: data.sdp 
+            }));
+            
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answer);
+            
+            socket.emit('webrtc_answer', { 
+                to: data.from, 
+                sdp: answer.sdp 
+            });
+        });
 
-  /* SETTINGS SCREEN */
-  .settings-header { background: #f9fafb; border-bottom: 0.5px solid #e5e7eb; padding: 10px 12px; }
-  .settings-header h3 { font-size: 12px; font-weight: 600; color: #1f2937; font-family: 'DM Sans'; }
-  .settings-group { padding: 8px 12px; }
-  .settings-group-label { font-size: 9px; font-weight: 600; color: #9ca3af; letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 4px; font-family: 'DM Sans'; }
-  .settings-item { display: flex; align-items: center; padding: 7px 0; border-bottom: 0.5px solid #f3f4f6; }
-  .settings-item-text { flex: 1; font-size: 10px; color: #374151; font-family: 'DM Sans'; }
-  .toggle { width: 28px; height: 16px; border-radius: 8px; position: relative; cursor: pointer; transition: background 0.2s; }
-  .toggle.on { background: #4F46E5; }
-  .toggle.off { background: #d1d5db; }
-  .toggle-knob { position: absolute; top: 2px; width: 12px; height: 12px; border-radius: 50%; background: white; transition: left 0.2s; }
-  .toggle.on .toggle-knob { left: 14px; }
-  .toggle.off .toggle-knob { left: 2px; }
+        socket.on('ice_candidate', async (data) => {
+            console.log("❄️ Received ICE candidate");
+            if (peerConnection) {
+                try {
+                    await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                } catch (e) {
+                    console.error("Error adding ice candidate", e);
+                }
+            }
+        });
 
-  /* NOTIFICATIONS SCREEN */
-  .notif-header { background: #4F46E5; padding: 10px 12px; }
-  .notif-header h3 { font-size: 12px; font-weight: 600; color: white; font-family: 'DM Sans'; }
-  .notif-item { display: flex; gap: 8px; padding: 8px 12px; border-bottom: 0.5px solid #f3f4f6; cursor: pointer; transition: background 0.15s; }
-  .notif-item:hover { background: #f9fafb; }
-  .notif-dot-wrap { padding-top: 3px; }
-  .notif-dot { width: 7px; height: 7px; border-radius: 50%; }
-  .notif-title { font-size: 10px; font-weight: 500; color: #111827; font-family: 'DM Sans'; }
-  .notif-time { font-size: 8px; color: #9ca3af; font-family: 'DM Mono'; margin-top: 2px; }
-  .notif-body { font-size: 9px; color: #6b7280; margin-top: 2px; font-family: 'DM Sans'; }
+        // ==========================================
+        // 4. REMOTE MOUSE CONTROLS
+        // ==========================================
+        // ==========================================
+        // 4. REMOTE MOUSE CONTROLS
+        // ==========================================
+        videoElement.addEventListener('pointerdown', (e) => {
+            e.preventDefault(); // <-- ADD THIS: Stops the browser from trying to drag or pause the video
+            
+            if (!currentStreamerId) return; 
 
-  /* BOTTOM NAV */
-  .phone-nav { position: absolute; bottom: 0; left: 0; right: 0; height: 46px; background: white; border-top: 0.5px solid #e5e7eb; display: flex; z-index: 20; }
-  .nav-btn { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; cursor: pointer; border: none; background: transparent; padding: 0; }
-  .nav-btn svg { width: 16px; height: 16px; }
-  .nav-btn span { font-size: 8px; font-family: 'DM Sans'; font-weight: 500; }
-  .nav-btn.active-nav { color: #4F46E5; }
-  .nav-btn:not(.active-nav) { color: #9ca3af; }
+            const rect = videoElement.getBoundingClientRect();
+            
+            const xPercent = (e.clientX - rect.left) / rect.width;
+            const yPercent = (e.clientY - rect.top) / rect.height;
 
-  /* RIGHT PANEL */
-  .right-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-  .panel-tabs { display: flex; border-bottom: 0.5px solid var(--color-border-tertiary); background: var(--color-background-primary); padding: 0 16px; flex-shrink: 0; }
-  .tab { font-size: 11px; padding: 10px 12px; cursor: pointer; color: var(--color-text-tertiary); border-bottom: 2px solid transparent; transition: all 0.15s; margin-bottom: -0.5px; }
-  .tab.active-tab { color: var(--color-text-info); border-bottom-color: #3B82F6; }
-  .tab:hover:not(.active-tab) { color: var(--color-text-secondary); }
-  .tab-content { flex: 1; overflow-y: auto; padding: 14px 16px; }
+            console.log(`🖱️ Sending click at X: ${xPercent.toFixed(3)}, Y: ${yPercent.toFixed(3)}`);
 
-  /* INFO ROWS */
-  .info-row { display: flex; justify-content: space-between; align-items: center; padding: 7px 0; border-bottom: 0.5px solid var(--color-border-tertiary); }
-  .info-label { font-size: 11px; color: var(--color-text-secondary); }
-  .info-val { font-size: 11px; color: var(--color-text-primary); font-family: 'DM Mono', monospace; }
-  .section-title { font-size: 10px; font-weight: 600; color: var(--color-text-tertiary); letter-spacing: 0.07em; text-transform: uppercase; margin: 14px 0 6px; }
-  .metric-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 10px; }
-  .metric-card { background: var(--color-background-secondary); border-radius: 6px; padding: 8px 10px; }
-  .metric-label { font-size: 9px; color: var(--color-text-tertiary); margin-bottom: 3px; }
-  .metric-val { font-size: 16px; font-weight: 500; color: var(--color-text-primary); font-family: 'DM Mono', monospace; }
-  .metric-unit { font-size: 9px; color: var(--color-text-tertiary); }
-
-  /* LOG */
-  .log-entry { display: flex; gap: 10px; padding: 5px 0; border-bottom: 0.5px solid var(--color-border-tertiary); }
-  .log-time { font-size: 10px; color: var(--color-text-tertiary); font-family: 'DM Mono', monospace; white-space: nowrap; width: 50px; }
-  .log-text { font-size: 11px; color: var(--color-text-secondary); flex: 1; }
-  .log-badge { font-size: 9px; padding: 1px 5px; border-radius: 3px; white-space: nowrap; align-self: flex-start; margin-top: 1px; }
-  .log-nav { background: var(--color-background-info); color: var(--color-text-info); }
-  .log-tap { background: var(--color-background-success); color: var(--color-text-success); }
-  .log-sys { background: var(--color-background-secondary); color: var(--color-text-tertiary); }
-  .log-warn { background: var(--color-background-warning); color: var(--color-text-warning); }
-
-  /* CONTROLS */
-  .control-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-  .ctrl-btn { padding: 9px 12px; border-radius: 6px; border: 0.5px solid var(--color-border-secondary); background: var(--color-background-primary); font-size: 11px; color: var(--color-text-secondary); cursor: pointer; display: flex; align-items: center; gap: 7px; transition: all 0.15s; font-family: 'DM Sans', sans-serif; }
-  .ctrl-btn:hover { background: var(--color-background-secondary); color: var(--color-text-primary); }
-  .ctrl-btn svg { width: 13px; height: 13px; flex-shrink: 0; }
-</style>
-
-<h2 class="sr-only">Android Remote Support Admin Panel — live device viewer with navigation, logs, and device info tabs</h2>
-
-<div class="panel">
-  <!-- SIDEBAR -->
-  <div class="sidebar">
-    <div class="brand">
-      <div class="brand-name"><span class="status-dot"></span>RemoteDesk</div>
-      <div class="brand-sub">support console v2.1</div>
-    </div>
-    <div class="nav-section">
-      <div class="nav-label">Session</div>
-      <div class="nav-item active" onclick="setNav(this,'screen')">
-        <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="2" width="14" height="10" rx="2"/><path d="M5 14h6M8 12v2"/></svg>
-        Live Screen
-      </div>
-      <div class="nav-item" onclick="setNav(this,'logs')">
-        <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 4h12M2 8h8M2 12h5"/></svg>
-        Event Logs
-      </div>
-      <div class="nav-item" onclick="setNav(this,'device')">
-        <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="1" width="8" height="14" rx="2"/><circle cx="8" cy="12" r="0.8" fill="currentColor"/></svg>
-        Device Info
-      </div>
-    </div>
-    <div class="nav-section">
-      <div class="nav-label">Tools</div>
-      <div class="nav-item" onclick="setNav(this,'ctrl')">
-        <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="3"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2"/></svg>
-        Remote Control
-      </div>
-      <div class="nav-item">
-        <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 10l4-4 3 3 5-5"/></svg>
-        Analytics
-      </div>
-    </div>
-    <div class="client-section">
-      <div class="client-badge">
-        <div class="client-avatar">VK</div>
-        <div class="client-info">
-          <div class="client-name">Vibekjyoti</div>
-          <div class="client-device">Pixel 7 · A13</div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- MAIN -->
-  <div class="main">
-    <div class="topbar">
-      <div class="topbar-title" id="topbar-title">Live Screen Mirror</div>
-      <span class="topbar-meta" id="topbar-meta">Session #4821 · 12:47 PM</span>
-      <span class="badge badge-live">● LIVE</span>
-      <button class="btn-sm" onclick="simulateClick()">Simulate Tap</button>
-      <button class="btn-sm btn-danger">End Session</button>
-    </div>
-
-    <div class="content">
-      <!-- PHONE VIEWPORT -->
-      <div class="phone-wrap" id="phone-wrap">
-        <div style="font-size:9px;color:var(--color-text-tertiary);font-family:'DM Mono';margin-bottom:8px;letter-spacing:0.06em;">DEVICE MIRROR</div>
-        <div class="phone-frame">
-          <div class="phone-notch">
-            <div class="notch-camera"></div>
-            <div class="notch-speaker"></div>
-          </div>
-          <div class="phone-screen" id="phone-screen" style="background:#f3f4f6;">
-            <div class="phone-statusbar">
-              <span id="status-time">12:47</span>
-              <span>●●● WiFi ▌</span>
-            </div>
-
-            <!-- HOME -->
-            <div class="screen active" id="screen-home">
-              <div class="home-topbar">
-                <div><h3>Dashboard</h3></div>
-                <span>Hi, VK</span>
-              </div>
-              <div class="home-content">
-                <div class="home-banner">
-                  <p>Current Balance</p>
-                  <h4>₹ 24,850.00</h4>
-                </div>
-                <div class="home-grid">
-                  <div class="home-card" onclick="phoneNav('payments')">
-                    <div class="home-card-icon" style="background:#EEF2FF;"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="#4F46E5" stroke-width="1.5"><rect x="1" y="4" width="14" height="9" rx="2"/><path d="M1 7h14"/></svg></div>
-                    <h5>Payments</h5>
-                    <p>Send & receive</p>
-                  </div>
-                  <div class="home-card" onclick="phoneNav('profile')">
-                    <div class="home-card-icon" style="background:#F0FDF4;"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="#16a34a" stroke-width="1.5"><circle cx="8" cy="5" r="3"/><path d="M2 14c0-3.3 2.7-6 6-6s6 2.7 6 6"/></svg></div>
-                    <h5>Profile</h5>
-                    <p>Your account</p>
-                  </div>
-                  <div class="home-card" onclick="phoneNav('notif')">
-                    <div class="home-card-icon" style="background:#FFF7ED;"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="#ea580c" stroke-width="1.5"><path d="M8 1a5 5 0 0 1 5 5v3l1 2H2l1-2V6a5 5 0 0 1 5-5z"/><path d="M6.5 13a1.5 1.5 0 0 0 3 0"/></svg></div>
-                    <h5>Alerts</h5>
-                    <p>3 unread</p>
-                  </div>
-                  <div class="home-card" onclick="phoneNav('settings')">
-                    <div class="home-card-icon" style="background:#F5F3FF;"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="#7C3AED" stroke-width="1.5"><circle cx="8" cy="8" r="2.5"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.1 3.1l1.4 1.4M11.5 11.5l1.4 1.4M3.1 12.9l1.4-1.4M11.5 4.5l1.4-1.4"/></svg></div>
-                    <h5>Settings</h5>
-                    <p>Preferences</p>
-                  </div>
-                </div>
-                <div style="font-size:9px;font-weight:600;color:#6b7280;font-family:'DM Sans';margin-bottom:5px;">RECENT ACTIVITY</div>
-                <div style="background:white;border-radius:8px;border:0.5px solid #e5e7eb;">
-                  <div style="display:flex;align-items:center;padding:7px 10px;border-bottom:0.5px solid #f3f4f6;gap:8px;">
-                    <div style="width:22px;height:22px;border-radius:50%;background:#EEF2FF;display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:700;color:#4F46E5;font-family:'DM Sans'">P</div>
-                    <div style="flex:1"><div style="font-size:9px;font-weight:500;color:#111;font-family:'DM Sans'">Payment to Raj</div><div style="font-size:8px;color:#9ca3af;font-family:'DM Mono'">2 hrs ago</div></div>
-                    <div style="font-size:9px;color:#dc2626;font-weight:500;font-family:'DM Mono'">−₹500</div>
-                  </div>
-                  <div style="display:flex;align-items:center;padding:7px 10px;gap:8px;">
-                    <div style="width:22px;height:22px;border-radius:50%;background:#F0FDF4;display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:700;color:#16a34a;font-family:'DM Sans'">R</div>
-                    <div style="flex:1"><div style="font-size:9px;font-weight:500;color:#111;font-family:'DM Sans'">Received from Ankit</div><div style="font-size:8px;color:#9ca3af;font-family:'DM Mono'">Yesterday</div></div>
-                    <div style="font-size:9px;color:#16a34a;font-weight:500;font-family:'DM Mono'">+₹1200</div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <!-- PROFILE -->
-            <div class="screen" id="screen-profile">
-              <div class="profile-header">
-                <div style="font-size:12px;font-weight:600;color:white;font-family:'DM Sans';margin-bottom:26px;">My Profile</div>
-                <div class="profile-avatar-wrap"><div class="profile-avatar">VK</div></div>
-              </div>
-              <div class="profile-body">
-                <div class="profile-name">Vibekjyoti K.</div>
-                <div class="profile-email">vibekjyoti@email.com</div>
-                <div class="profile-row"><span class="profile-row-label">Phone</span><span class="profile-row-val">+91 98765 43210</span></div>
-                <div class="profile-row"><span class="profile-row-label">User ID</span><span class="profile-row-val">USR-00481</span></div>
-                <div class="profile-row"><span class="profile-row-label">Joined</span><span class="profile-row-val">Jan 2024</span></div>
-                <div class="profile-row"><span class="profile-row-label">Plan</span><span class="profile-row-val" style="color:#4F46E5">Pro</span></div>
-                <div class="profile-row"><span class="profile-row-label">KYC Status</span><span class="profile-row-val" style="color:#16a34a">Verified ✓</span></div>
-              </div>
-            </div>
-
-            <!-- NOTIFICATIONS -->
-            <div class="screen" id="screen-notif">
-              <div class="notif-header"><h3>Notifications</h3></div>
-              <div class="notif-item"><div class="notif-dot-wrap"><div class="notif-dot" style="background:#4F46E5"></div></div><div><div class="notif-title">Payment Successful</div><div class="notif-body">₹500 sent to Raj Kumar</div><div class="notif-time">12:31 PM</div></div></div>
-              <div class="notif-item"><div class="notif-dot-wrap"><div class="notif-dot" style="background:#ea580c"></div></div><div><div class="notif-title">Login Alert</div><div class="notif-body">New device login detected</div><div class="notif-time">11:05 AM</div></div></div>
-              <div class="notif-item"><div class="notif-dot-wrap"><div class="notif-dot" style="background:#16a34a"></div></div><div><div class="notif-title">Money Received</div><div class="notif-body">+₹1200 from Ankit</div><div class="notif-time">Yesterday</div></div></div>
-              <div class="notif-item" style="opacity:0.5"><div class="notif-dot-wrap"><div class="notif-dot" style="background:#d1d5db"></div></div><div><div class="notif-title">App Update Available</div><div class="notif-body">Version 3.2.1 is ready</div><div class="notif-time">2 days ago</div></div></div>
-            </div>
-
-            <!-- SETTINGS -->
-            <div class="screen" id="screen-settings">
-              <div class="settings-header"><h3>Settings</h3></div>
-              <div class="settings-group">
-                <div class="settings-group-label">Security</div>
-                <div class="settings-item"><span class="settings-item-text">Biometric login</span><div class="toggle on" onclick="toggleSetting(this)"><div class="toggle-knob"></div></div></div>
-                <div class="settings-item"><span class="settings-item-text">2FA Authentication</span><div class="toggle on" onclick="toggleSetting(this)"><div class="toggle-knob"></div></div></div>
-                <div class="settings-item"><span class="settings-item-text">Auto-lock (1 min)</span><div class="toggle off" onclick="toggleSetting(this)"><div class="toggle-knob"></div></div></div>
-              </div>
-              <div class="settings-group">
-                <div class="settings-group-label">Notifications</div>
-                <div class="settings-item"><span class="settings-item-text">Push notifications</span><div class="toggle on" onclick="toggleSetting(this)"><div class="toggle-knob"></div></div></div>
-                <div class="settings-item"><span class="settings-item-text">SMS alerts</span><div class="toggle off" onclick="toggleSetting(this)"><div class="toggle-knob"></div></div></div>
-              </div>
-            </div>
-
-            <!-- PAYMENTS -->
-            <div class="screen" id="screen-payments">
-              <div style="background:#4F46E5;padding:10px 12px;"><div style="font-size:12px;font-weight:600;color:white;font-family:'DM Sans'">Payments</div></div>
-              <div style="padding:10px;">
-                <div style="background:white;border-radius:8px;border:0.5px solid #e5e7eb;overflow:hidden;">
-                  <div style="padding:8px 10px;background:#f9fafb;border-bottom:0.5px solid #e5e7eb;font-size:9px;font-weight:600;color:#6b7280;font-family:'DM Sans'">QUICK ACTIONS</div>
-                  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0;">
-                    <div style="padding:10px;text-align:center;border-right:0.5px solid #f3f4f6;cursor:pointer"><div style="width:24px;height:24px;border-radius:50%;background:#EEF2FF;margin:0 auto 4px;display:flex;align-items:center;justify-content:center"><svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="#4F46E5" stroke-width="1.5"><path d="M3 8h10M9 4l4 4-4 4"/></svg></div><div style="font-size:8px;color:#374151;font-family:'DM Sans'">Send</div></div>
-                    <div style="padding:10px;text-align:center;border-right:0.5px solid #f3f4f6;cursor:pointer"><div style="width:24px;height:24px;border-radius:50%;background:#F0FDF4;margin:0 auto 4px;display:flex;align-items:center;justify-content:center"><svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="#16a34a" stroke-width="1.5"><path d="M13 8H3M7 4L3 8l4 4"/></svg></div><div style="font-size:8px;color:#374151;font-family:'DM Sans'">Request</div></div>
-                    <div style="padding:10px;text-align:center;cursor:pointer"><div style="width:24px;height:24px;border-radius:50%;background:#FFF7ED;margin:0 auto 4px;display:flex;align-items:center;justify-content:center"><svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="#ea580c" stroke-width="1.5"><rect x="1" y="4" width="14" height="9" rx="2"/><path d="M1 7h14"/></svg></div><div style="font-size:8px;color:#374151;font-family:'DM Sans'">Bills</div></div>
-                  </div>
-                </div>
-                <div style="margin-top:10px;font-size:9px;font-weight:600;color:#6b7280;font-family:'DM Sans';margin-bottom:5px">TRANSACTIONS</div>
-                <div style="background:white;border-radius:8px;border:0.5px solid #e5e7eb;">
-                  <div style="display:flex;align-items:center;padding:7px 10px;border-bottom:0.5px solid #f3f4f6;gap:8px;"><div style="width:6px;height:6px;border-radius:50%;background:#dc2626;flex-shrink:0"></div><div style="flex:1"><div style="font-size:9px;font-weight:500;color:#111;font-family:'DM Sans'">Raj Kumar</div><div style="font-size:8px;color:#9ca3af;font-family:'DM Mono'">12:31 PM</div></div><div style="font-size:9px;color:#dc2626;font-weight:500;font-family:'DM Mono'">−₹500</div></div>
-                  <div style="display:flex;align-items:center;padding:7px 10px;gap:8px;"><div style="width:6px;height:6px;border-radius:50%;background:#16a34a;flex-shrink:0"></div><div style="flex:1"><div style="font-size:9px;font-weight:500;color:#111;font-family:'DM Sans'">Ankit Sharma</div><div style="font-size:8px;color:#9ca3af;font-family:'DM Mono'">Yesterday</div></div><div style="font-size:9px;color:#16a34a;font-weight:500;font-family:'DM Mono'">+₹1200</div></div>
-                </div>
-              </div>
-            </div>
-
-            <!-- BOTTOM NAV -->
-            <div class="phone-nav">
-              <button class="nav-btn active-nav" id="pnav-home" onclick="phoneNav('home')">
-                <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5L1 7v8h5v-4h4v4h5V7L8 1.5z"/></svg>
-                <span>Home</span>
-              </button>
-              <button class="nav-btn" id="pnav-payments" onclick="phoneNav('payments')">
-                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="4" width="14" height="9" rx="2"/><path d="M1 7h14"/></svg>
-                <span>Pay</span>
-              </button>
-              <button class="nav-btn" id="pnav-notif" onclick="phoneNav('notif')">
-                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1a5 5 0 0 1 5 5v3l1 2H2l1-2V6a5 5 0 0 1 5-5z"/><path d="M6.5 13a1.5 1.5 0 0 0 3 0"/></svg>
-                <span>Alerts</span>
-              </button>
-              <button class="nav-btn" id="pnav-profile" onclick="phoneNav('profile')">
-                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="5" r="3"/><path d="M2 14c0-3.3 2.7-6 6-6s6 2.7 6 6"/></svg>
-                <span>Profile</span>
-              </button>
-            </div>
-          </div>
-        </div>
-        <div style="font-size:9px;color:var(--color-text-tertiary);font-family:'DM Mono';margin-top:8px;display:flex;gap:10px;align-items:center;">
-          <span>186×388px</span>
-          <span style="color:#22c55e">● streaming</span>
-        </div>
-      </div>
-
-      <!-- RIGHT INFO PANEL -->
-      <div class="right-panel" id="right-panel">
-        <div class="panel-tabs">
-          <div class="tab active-tab" onclick="setTab(this,'info')">Overview</div>
-          <div class="tab" onclick="setTab(this,'logs')">Event Log</div>
-          <div class="tab" onclick="setTab(this,'controls')">Controls</div>
-        </div>
-
-        <!-- OVERVIEW TAB -->
-        <div class="tab-content" id="tab-info">
-          <div class="section-title">Active Session</div>
-          <div class="metric-row">
-            <div class="metric-card"><div class="metric-label">Duration</div><div class="metric-val" id="duration">08:24</div><div class="metric-unit">min:sec</div></div>
-            <div class="metric-card"><div class="metric-label">Events</div><div class="metric-val" id="event-count">23</div><div class="metric-unit">actions</div></div>
-            <div class="metric-card"><div class="metric-label">Latency</div><div class="metric-val">47</div><div class="metric-unit">ms</div></div>
-          </div>
-          <div class="section-title">Device</div>
-          <div class="info-row"><span class="info-label">Model</span><span class="info-val">Google Pixel 7</span></div>
-          <div class="info-row"><span class="info-label">OS</span><span class="info-val">Android 13 (API 33)</span></div>
-          <div class="info-row"><span class="info-label">App Version</span><span class="info-val">3.1.4</span></div>
-          <div class="info-row"><span class="info-label">Build</span><span class="info-val">Release</span></div>
-          <div class="info-row"><span class="info-label">Language</span><span class="info-val">Java + Kotlin</span></div>
-          <div class="info-row"><span class="info-label">Screen</span><span class="info-val" id="current-screen-label">Home</span></div>
-          <div class="section-title">Connection</div>
-          <div class="info-row"><span class="info-label">Network</span><span class="info-val">Wi-Fi · Excellent</span></div>
-          <div class="info-row"><span class="info-label">IP</span><span class="info-val">192.168.1.42</span></div>
-          <div class="info-row"><span class="info-label">Session ID</span><span class="info-val">#SES-4821</span></div>
-        </div>
-
-        <!-- LOGS TAB -->
-        <div class="tab-content" id="tab-logs" style="display:none;">
-          <div id="log-container"></div>
-        </div>
-
-        <!-- CONTROLS TAB -->
-        <div class="tab-content" id="tab-controls" style="display:none;">
-          <div class="section-title" style="margin-top:4px;">Navigation</div>
-          <div class="control-grid">
-            <button class="ctrl-btn" onclick="phoneNav('home')"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5L1 7v8h5v-4h4v4h5V7L8 1.5z"/></svg>Go to Home</button>
-            <button class="ctrl-btn" onclick="phoneNav('profile')"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="5" r="3"/><path d="M2 14c0-3.3 2.7-6 6-6s6 2.7 6 6"/></svg>Open Profile</button>
-            <button class="ctrl-btn" onclick="phoneNav('settings')"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="2.5"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2"/></svg>Open Settings</button>
-            <button class="ctrl-btn" onclick="phoneNav('notif')"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1a5 5 0 0 1 5 5v3l1 2H2l1-2V6a5 5 0 0 1 5-5z"/></svg>Notifications</button>
-          </div>
-          <div class="section-title">Actions</div>
-          <div class="control-grid">
-            <button class="ctrl-btn" onclick="simulateClick()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 1v7l2-2 4 8 1.5-.7-4-8 2.5-.5L4 1z"/></svg>Simulate Tap</button>
-            <button class="ctrl-btn" onclick="phoneNav('home')"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 8h9M7 4l4 4-4 4"/></svg>Force Back</button>
-            <button class="ctrl-btn" style="grid-column:span 2;border-color:var(--color-border-danger);color:var(--color-text-danger)" onclick="clearLogs()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 4h12M5 4V2h6v2M6 7v5M10 7v5M3 4l1 10h8l1-10"/></svg>Clear Session Logs</button>
-          </div>
-          <div class="section-title">Annotation</div>
-          <textarea style="width:100%;height:70px;font-size:11px;font-family:'DM Mono',monospace;border:0.5px solid var(--color-border-tertiary);border-radius:6px;padding:8px;background:var(--color-background-secondary);color:var(--color-text-primary);resize:none;" placeholder="Add session notes..."></textarea>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
-
-<script>
-let currentPhoneScreen = 'home';
-let eventCount = 23;
-let sessionSec = 504;
-let logs = [
-  {time:'12:38', text:'App launched', type:'sys'},
-  {time:'12:39', text:'User navigated to Home', type:'nav'},
-  {time:'12:41', text:'Tapped Payments card', type:'tap'},
-  {time:'12:43', text:'Navigated back to Home', type:'nav'},
-  {time:'12:45', text:'Opened Notifications', type:'nav'},
-  {time:'12:46', text:'Tapped payment alert', type:'tap'},
-  {time:'12:47', text:'Navigated to Profile', type:'nav'},
-];
-
-function renderLogs() {
-  const c = document.getElementById('log-container');
-  c.innerHTML = [...logs].reverse().map(l =>
-    `<div class="log-entry"><span class="log-time">${l.time}</span><span class="log-text">${l.text}</span><span class="log-badge log-${l.type}">${l.type}</span></div>`
-  ).join('');
-}
-
-function addLog(text, type) {
-  const d = new Date();
-  logs.push({time: d.getHours()+':'+String(d.getMinutes()).padStart(2,'0'), text, type});
-  eventCount++;
-  document.getElementById('event-count').textContent = eventCount;
-  renderLogs();
-}
-
-function phoneNav(screen) {
-  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
-  const el = document.getElementById('screen-'+screen);
-  if(el) el.classList.add('active');
-  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active-nav'));
-  const nb = document.getElementById('pnav-'+screen);
-  if(nb) nb.classList.add('active-nav');
-  currentPhoneScreen = screen;
-  const labels = {home:'Home',profile:'Profile',settings:'Settings',notif:'Notifications',payments:'Payments'};
-  document.getElementById('current-screen-label').textContent = labels[screen]||screen;
-  addLog('Navigated to '+labels[screen], 'nav');
-  const screens = {home:'Dashboard',profile:'Profile',settings:'Settings',notif:'Notifications',payments:'Payments'};
-  document.getElementById('topbar-title').textContent = 'Viewing: ' + (screens[screen]||screen);
-}
-
-function toggleSetting(el) {
-  el.classList.toggle('on');
-  el.classList.toggle('off');
-  addLog('Setting toggled on Settings screen', 'tap');
-}
-
-function simulateClick() {
-  const phone = document.getElementById('phone-screen');
-  const ripple = document.createElement('div');
-  ripple.style.cssText = 'position:absolute;width:20px;height:20px;border-radius:50%;background:rgba(79,70,229,0.35);top:'+(30+Math.random()*50)+'%;left:'+(20+Math.random()*60)+'%;transform:translate(-50%,-50%);pointer-events:none;animation:ripple 0.5s ease-out forwards;z-index:99';
-  phone.appendChild(ripple);
-  setTimeout(()=>ripple.remove(),600);
-  addLog('Simulated tap on '+currentPhoneScreen, 'tap');
-}
-
-function clearLogs() { logs = []; renderLogs(); }
-
-function setNav(el, section) {
-  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-  el.classList.add('active');
-  const phoneWrap = document.getElementById('phone-wrap');
-  const rightPanel = document.getElementById('right-panel');
-  if(section === 'logs') {
-    phoneWrap.style.display = 'none';
-    rightPanel.style.flex = '1';
-    setTab(document.querySelectorAll('.tab')[1], 'logs');
-  } else if(section === 'device') {
-    phoneWrap.style.display = 'none';
-    rightPanel.style.flex = '1';
-    setTab(document.querySelectorAll('.tab')[0], 'info');
-  } else if(section === 'ctrl') {
-    phoneWrap.style.display = 'none';
-    rightPanel.style.flex = '1';
-    setTab(document.querySelectorAll('.tab')[2], 'controls');
-  } else {
-    phoneWrap.style.display = '';
-    rightPanel.style.flex = '1';
-    setTab(document.querySelectorAll('.tab')[0], 'info');
-  }
-}
-
-function setTab(el, id) {
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active-tab'));
-  el.classList.add('active-tab');
-  ['info','logs','controls'].forEach(t => {
-    const el2 = document.getElementById('tab-'+t);
-    if(el2) el2.style.display = t===id ? '' : 'none';
-  });
-}
-
-const styleEl = document.createElement('style');
-styleEl.textContent = '@keyframes ripple{0%{transform:translate(-50%,-50%) scale(0.5);opacity:1}100%{transform:translate(-50%,-50%) scale(3);opacity:0}}';
-document.head.appendChild(styleEl);
-
-setInterval(() => {
-  sessionSec++;
-  const m = Math.floor(sessionSec/60), s = sessionSec%60;
-  const el = document.getElementById('duration');
-  if(el) el.textContent = String(m).padStart(2,'0')+':'+String(s).padStart(2,'0');
-  const timeEl = document.getElementById('status-time');
-  if(timeEl) {
-    const d = new Date();
-    timeEl.textContent = d.getHours()+':'+String(d.getMinutes()).padStart(2,'0');
-  }
-}, 1000);
-
-renderLogs();
-</script>
+            socket.emit('remote_input', {
+                to: currentStreamerId,
+                x: xPercent,
+                y: yPercent
+            });
+        });
+    </script>
+</body>
+</html>
