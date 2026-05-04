@@ -18,6 +18,8 @@
     
     <!-- Button bypasses public domain autoplay restrictions -->
     <button id="startBtn" style="display: none;">Connect to Stream</button>
+    <button id="stopStreamBtn" style="background-color: #ff4c4c; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; margin-top: 10px;">
+    🛑 Stop Stream</button>
 
     <!-- Muted & Controls are required alongside the button -->
     <video id="remoteVideo" autoplay muted playsinline></video>
@@ -218,6 +220,30 @@
                     duration: Math.min(Math.max(duration, 200), 1000) 
                 });
             }
+        });
+        // ==========================================
+        // 5. STOP STREAM COMMAND
+        // ==========================================
+        const stopStreamBtn = document.getElementById('stopStreamBtn');
+        
+        stopStreamBtn.addEventListener('click', () => {
+            if (!currentStreamerId) {
+                alert("No active stream to stop!");
+                return;
+            }
+
+            console.log("🛑 Sending Stop command to phone...");
+            
+            // Reuse our existing pipeline, but send the "stop" action
+            socket.emit('remote_input', {
+                to: currentStreamerId,
+                action: 'stop'
+            });
+
+            // Clear the video player on the web browser
+            videoElement.srcObject = null;
+            currentStreamerId = null;
+            alert("Stream stopped.");
         });
     </script>
 </body>
