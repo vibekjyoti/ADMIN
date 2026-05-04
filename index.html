@@ -143,55 +143,81 @@
         
         // ==========================================
         // 4. REMOTE MOUSE CONTROLS (ADVANCED MAPPER)
-        // ==========================================
-        videoElement.addEventListener('pointerdown', (e) => {
-            e.preventDefault(); 
-            if (!currentStreamerId) return; 
+        
+        let isPointerDown = false;
+        let startX = 0, startY = 0;
+        let startTime = 0;
 
+        function getMappedCoordinates(e) {
             const rect = videoElement.getBoundingClientRect();
-
-            // 1. Get the actual resolution of the incoming phone stream
             const videoRatio = videoElement.videoWidth / videoElement.videoHeight;
             const elementRatio = rect.width / rect.height;
 
-            let renderWidth = rect.width;
-            let renderHeight = rect.height;
-            let offsetX = 0;
-            let offsetY = 0;
+            let renderWidth = rect.width, renderHeight = rect.height;
+            let offsetX = 0, offsetY = 0;
 
-            // 2. Calculate the size of the black bars
             if (elementRatio > videoRatio) {
-                // Black bars on the left and right (Pillarbox)
                 renderWidth = renderHeight * videoRatio;
                 offsetX = (rect.width - renderWidth) / 2;
             } else {
-                // Black bars on the top and bottom (Letterbox)
                 renderHeight = renderWidth / videoRatio;
                 offsetY = (rect.height - renderHeight) / 2;
             }
 
-            // 3. Find the click position relative strictly to the video frame
-            const xInsideVideo = (e.clientX - rect.left) - offsetX;
-            const yInsideVideo = (e.clientY - rect.top) - offsetY;
+            const xInside = (e.clientX - rect.left) - offsetX;
+            const yInside = (e.clientY - rect.top) - offsetY;
 
-            // 4. Ignore clicks that land on the black bars
-            if (xInsideVideo < 0 || xInsideVideo > renderWidth || 
-                yInsideVideo < 0 || yInsideVideo > renderHeight) {
-                console.log("🖱️ Clicked on black bar - ignored.");
-                return;
+            // Clamp values between 0 and 1 so dragging off-screen doesn't crash Android
+            const xPercent = Math.max(0, Math.min(1, xInside / renderWidth));
+            const yPercent = Math.max(0, Math.min(1, yInside / renderHeight));
+
+            return { xPercent, yPercent };
+        }
+
+        videoElement.addEventListener('pointerdown', (e) => {
+            e.preventDefault();
+            if (!currentStreamerId) return;
+            
+            isPointerDown = true;
+            startTime = Date.now();
+            const coords = getMappedCoordinates(e);
+            startX = coords.xPercent;
+            startY = coords.yPercent;
+        });
+
+        videoElement.addEventListener('pointerup', (e) => {
+            e.preventDefault();
+            if (!currentStreamerId || !isPointerDown) return;
+            isPointerDown = false;
+
+            const coords = getMappedCoordinates(e);
+            const duration = Date.now() - startTime;
+            
+            // Calculate how far the mouse moved
+            const distance = Math.hypot(coords.xPercent - startX, coords.yPercent - startY);
+
+            // If movement is tiny (less than 2% of screen), it's a Tap. Otherwise, it's a Swipe.
+            if (distance < 0.02) {
+                console.log(`🖱️ Action: TAP -> X: ${coords.xPercent.toFixed(3)}, Y: ${coords.yPercent.toFixed(3)}`);
+                socket.emit('remote_input', {
+                    to: currentStreamerId,
+                    action: 'tap',
+                    x: coords.xPercent,
+                    y: coords.yPercent
+                });
+            } else {
+                console.log(`🖱️ Action: SWIPE -> Duration: ${duration}ms`);
+                socket.emit('remote_input', {
+                    to: currentStreamerId,
+                    action: 'swipe',
+                    startX: startX,
+                    startY: startY,
+                    endX: coords.xPercent,
+                    endY: coords.yPercent,
+                    // Keep swipe duration between 200ms and 1000ms for smooth Android rendering
+                    duration: Math.min(Math.max(duration, 200), 1000) 
+                });
             }
-
-            // 5. Calculate the perfect percentage
-            const xPercent = xInsideVideo / renderWidth;
-            const yPercent = yInsideVideo / renderHeight;
-
-            console.log(`🖱️ Precision Click -> X: ${xPercent.toFixed(3)}, Y: ${yPercent.toFixed(3)}`);
-
-            socket.emit('remote_input', {
-                to: currentStreamerId,
-                x: xPercent,
-                y: yPercent
-            });
         });
     </script>
 </body>
