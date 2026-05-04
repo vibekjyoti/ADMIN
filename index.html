@@ -140,23 +140,52 @@
             }
         });
 
+        
         // ==========================================
-        // 4. REMOTE MOUSE CONTROLS
-        // ==========================================
-        // ==========================================
-        // 4. REMOTE MOUSE CONTROLS
+        // 4. REMOTE MOUSE CONTROLS (ADVANCED MAPPER)
         // ==========================================
         videoElement.addEventListener('pointerdown', (e) => {
-            e.preventDefault(); // <-- ADD THIS: Stops the browser from trying to drag or pause the video
-            
+            e.preventDefault(); 
             if (!currentStreamerId) return; 
 
             const rect = videoElement.getBoundingClientRect();
-            
-            const xPercent = (e.clientX - rect.left) / rect.width;
-            const yPercent = (e.clientY - rect.top) / rect.height;
 
-            console.log(`🖱️ Sending click at X: ${xPercent.toFixed(3)}, Y: ${yPercent.toFixed(3)}`);
+            // 1. Get the actual resolution of the incoming phone stream
+            const videoRatio = videoElement.videoWidth / videoElement.videoHeight;
+            const elementRatio = rect.width / rect.height;
+
+            let renderWidth = rect.width;
+            let renderHeight = rect.height;
+            let offsetX = 0;
+            let offsetY = 0;
+
+            // 2. Calculate the size of the black bars
+            if (elementRatio > videoRatio) {
+                // Black bars on the left and right (Pillarbox)
+                renderWidth = renderHeight * videoRatio;
+                offsetX = (rect.width - renderWidth) / 2;
+            } else {
+                // Black bars on the top and bottom (Letterbox)
+                renderHeight = renderWidth / videoRatio;
+                offsetY = (rect.height - renderHeight) / 2;
+            }
+
+            // 3. Find the click position relative strictly to the video frame
+            const xInsideVideo = (e.clientX - rect.left) - offsetX;
+            const yInsideVideo = (e.clientY - rect.top) - offsetY;
+
+            // 4. Ignore clicks that land on the black bars
+            if (xInsideVideo < 0 || xInsideVideo > renderWidth || 
+                yInsideVideo < 0 || yInsideVideo > renderHeight) {
+                console.log("🖱️ Clicked on black bar - ignored.");
+                return;
+            }
+
+            // 5. Calculate the perfect percentage
+            const xPercent = xInsideVideo / renderWidth;
+            const yPercent = yInsideVideo / renderHeight;
+
+            console.log(`🖱️ Precision Click -> X: ${xPercent.toFixed(3)}, Y: ${yPercent.toFixed(3)}`);
 
             socket.emit('remote_input', {
                 to: currentStreamerId,
